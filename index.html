@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>身份验证系统</title>
+    <style>
+        /* 全局基础设置：全黑背景，禁止页面滚动和选中文字 */
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background-color: #000; color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden; user-select: none;
+            -webkit-user-select: none; /* 兼容 iOS */
+        }
+
+        /* ========== 阶段 1：指纹扫描页面 UI ========== */
+        #fingerprint-screen {
+            display: flex; flex-direction: column; align-items: center;
+            justify-content: center; height: 100%;
+            transition: opacity 0.5s ease;
+        }
+
+        .system-text { font-size: 1.2rem; margin-bottom: 30px; letter-spacing: 2px; text-align: center; }
+        .system-text.warning { color: #ff3333; font-size: 0.9rem; margin-top: 20px; }
+
+        /* 用 CSS 画一个简单的指纹触控区 */
+        #fingerprint-btn {
+            width: 120px; height: 150px;
+            border: 2px dashed #555; border-radius: 40px;
+            display: flex; align-items: center; justify-content: center;
+            position: relative; overflow: hidden;
+        }
+        
+        /* 扫描动画条 */
+        #scan-line {
+            position: absolute; top: 0; left: 0; width: 100%; height: 5px;
+            background: #00ff00; box-shadow: 0 0 10px #00ff00;
+            display: none;
+        }
+
+        /* 进度条文本 */
+        #progress-text { margin-top: 30px; font-size: 2rem; font-weight: bold; color: #00ff00; }
+
+        /* ========== 阶段 2：摄像头监控页面 UI ========== */
+        #camera-screen {
+            display: none; /* 初始隐藏 */
+            position: relative; width: 100%; height: 100%;
+        }
+
+        /* 视频流容器 */
+        #video-element {
+            width: 100%; height: 100%;
+            object-fit: cover; /* 保证视频铺满屏幕不拉伸 */
+            filter: grayscale(30%) sepia(50%) hue-rotate(80deg) contrast(150%); /* 监控滤镜：冷绿色调、高对比度 */
+        }
+
+        /* CCTV 覆盖层（录制红点、扫描线、数据框） */
+        .cctv-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; /* 让触摸事件穿透覆盖层 */
+            box-shadow: inset 0 0 100px rgba(0,0,0,0.9); /* 暗角效果 */
+        }
+
+        /* 闪烁的 REC 文字 */
+        .rec-text {
+            position: absolute; top: 20px; left: 20px;
+            color: red; font-size: 1.5rem; font-weight: bold;
+            animation: blink 1s infinite;
+        }
+        @keyframes blink { 50% { opacity: 0; } }
+
+        /* 屏幕扫描线（CRT电视效果） */
+        .scanlines {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 4px, 3px 100%;
+            z-index: 10; opacity: 0.6; pointer-events: none;
+        }
+        
+        /* 伪造的数据UI */
+        .fake-data {
+            position: absolute; bottom: 20px; left: 20px;
+            color: #00ff00; font-size: 0.8rem; line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 阶段 1：指纹验证 -->
+    <div id="fingerprint-screen">
+        <div class="system-text">系统锁定<br><span style="font-size:0.8rem; color:#888;">长按验证生物信息</span></div>
+        
+        <div id="fingerprint-btn">
+            <!-- 简单的指纹图标（SVG格式） -->
+            <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="1.5">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"></path>
+                <path d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6z"></path>
+            </svg>
+            <div id="scan-line"></div>
+        </div>
+
+        <div id="progress-text">0%</div>
+        <div class="system-text warning">警告：未经授权严禁访问</div>
+    </div>
+
+    <!-- 阶段 2：摄像头监控 -->
+    <div id="camera-screen">
+        <!-- playsinline 和 webkit-playsinline 是必须的，防止iOS微信里视频全屏播放 -->
+        <video id="video-element" autoplay playsinline webkit-playsinline muted></video>
+        
+        <div class="cctv-overlay">
+            <div class="rec-text">● REC</div>
+            <div class="scanlines"></div>
+            <div class="fake-data" id="dynamic-data">
+                ID: UNKNOWN_USER<br>
+                UPLINK: ACTIVE<br>
+                LAT/LON: ACQUIRING...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 获取 DOM 元素
+        const fpScreen = document.getElementById('fingerprint-screen');
+        const camScreen = document.getElementById('camera-screen');
+        const fpBtn = document.getElementById('fingerprint-btn');
+        const progressText = document.getElementById('progress-text');
+        const scanLine = document.getElementById('scan-line');
+        const videoElement = document.getElementById('video-element');
+        const dynamicData = document.getElementById('dynamic-data');
+
+        // 验证逻辑变量
+        let pressTimer = null;
+        let progress = 0;
+        let isVerified = false;
+
+        // --- 核心功能 1：长按指纹验证 ---
+        
+        function startScan(e) {
+            e.preventDefault(); // 防止默认的长按菜单
+            if (isVerified) return;
+
+            scanLine.style.display = 'block';
+            
+            // 扫描线上下移动动画
+            let pos = 0; let direction = 1;
+            scanLine.animation = setInterval(() => {
+                pos += direction * 2;
+                if(pos > 145 || pos < 0) direction *= -1;
+                scanLine.style.top = pos + 'px';
+            }, 20);
+
+            // 进度条逻辑
+            pressTimer = setInterval(() => {
+                progress += Math.floor(Math.random() * 3) + 1; // 每次随机增加 1-3
+                if (progress >= 100) {
+                    progress = 100;
+                    progressText.innerText = "100%";
+                    verifySuccess();
+                } else {
+                    progressText.innerText = progress + "%";
+                }
+            }, 50); // 每50毫秒更新一次
+        }
+
+        function stopScan(e) {
+            e.preventDefault();
+            if (isVerified) return;
+
+            // 停止定时器
+            clearInterval(pressTimer);
+            clearInterval(scanLine.animation);
+            scanLine.style.display = 'none';
+
+            // 如果没到100%就松手，进度清零重来
+            if (progress < 100) {
+                progress = 0;
+                progressText.innerText = "0%";
+                progressText.style.color = "red";
+                setTimeout(() => { progressText.style.color = "#00ff00"; }, 500);
+            }
+        }
+
+        // 监听触摸事件（兼容手机触摸和电脑鼠标）
+        fpBtn.addEventListener('touchstart', startScan, {passive: false});
+        fpBtn.addEventListener('touchend', stopScan, {passive: false});
+        fpBtn.addEventListener('mousedown', startScan); // 方便电脑端测试
+        fpBtn.addEventListener('mouseup', stopScan);
+
+        // --- 核心功能 2：验证成功并启动摄像头 ---
+
+        function verifySuccess() {
+            isVerified = true;
+            clearInterval(pressTimer);
+            clearInterval(scanLine.animation);
+            
+            progressText.innerText = "验证通过";
+            progressText.style.color = "#fff";
+            document.querySelector('.warning').innerText = "正在接入主控视觉...";
+            document.querySelector('.warning').style.color = "#00ff00";
+
+            // 延迟1秒后切换画面，增强仪式感
+            setTimeout(() => {
+                startCamera();
+            }, 1000);
+        }
+
+        function startCamera() {
+            // 切换 UI
+            fpScreen.style.display = 'none';
+            camScreen.style.display = 'block';
+
+            // 摄像头配置参数：请求视频，优先使用后置摄像头
+            const constraints = {
+                video: { facingMode: "environment" },
+                audio: false
+            };
+
+            // 调用设备摄像头 API
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                navigator.mediaDevices.getUserMedia(constraints)
+                    .then(function(stream) {
+                        videoElement.srcObject = stream;
+                        // 随机生成假数据跳动
+                        setInterval(() => {
+                            dynamicData.innerHTML = `
+                                ID: #${Math.floor(Math.random()*9000)+1000}<br>
+                                UPLINK: ${Math.random() > 0.1 ? 'STABLE' : 'WARN'}<br>
+                                LAT: ${(Math.random() * 90).toFixed(4)} LON: ${(Math.random() * 180).toFixed(4)}
+                            `;
+                        }, 500);
+                    })
+                    .catch(function(error) {
+                        console.error("获取摄像头失败:", error);
+                        alert("无法访问摄像头。请确保在微信或浏览器中授予了相机权限，并且页面通过 HTTPS 访问。");
+                    });
+            } else {
+                alert("当前浏览器不支持摄像头API，请使用最新版微信或Safari/Chrome浏览器。");
+            }
+        }
+    </script>
+</body>
+</html>
